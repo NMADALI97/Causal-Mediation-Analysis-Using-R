@@ -1,0 +1,1151 @@
+---
+title: "Project 7: Mediation Analysis"
+author: "Adnan Asadullah, Rayan Charrier, Mithuran Gajendran, Nabil Madali"
+date: "5 avril 2020"
+runtime: static
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_float: true
+    toc_depth: 4
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Causal mediation analysis is frequently used to assess potential causal mechanisms. More specifically, mediation analysis aims at disentangling the effects of a treatment on an outcome through alternative causal mechanisms and has become a popular practice in biomedical and social science applications. The aim of this project is to get familiar with mediation analysis and to understand its main sub-problems: indirect causal effect estimation and sensitivity analysis. You can either choose a more applied approach to apprehend this topic or choose the more theoretical paper on identification, inference and sensitivity.
+
+Our work is based on the following articles:
+
+- LANGE T, VANSTEELANDT S, BEKAERT M. (2011). A Simple Unified Approach for Estimating Natural Direct and Indirect Effects. American Journal of Epidemiology.
+176(3):190-195.
+https://academic.oup.com/aje/article/176/3/190/99496
+
+- IMAI K, KEELE L, YAMAMOTO T. (2010). Identification, Inference and Sensitivity Analysis for Causal Mediation Effects. Statistical Science. 25(1):51-71.
+https://www.jstor.org/stable/pdf/41058997.pdf?casa_token=ym7l4rAtIZkAAAAA:dDicuRrjqZW-dhh1c_aScoh8OMF7NtX5syaQXE82hYFImMQY_I3UB6DmuD8QpeBpaNRK5fYOxGtgjEad8CVBG4yfVyNzz8m87SYacIUgLOpSDa3HnJkNoQ
+
+- IMAI K, KEELE L, TINGLEY D, YAMAMOTO T. (2010). Causal Mediation Analysis Using R. Advances in Social Science Research Using R. VINOD H. D EDS. Vinod 129-154.
+https://cran.r-project.org/web/packages/mediation/vignettes/mediation-old.pdf
+
+
+That Markown is complementray to the Latex report **Causal Mediation Analysis** and comes after it: we won't repeat the bibliography for the sake of clarity, as well as the explanations of the methods alrdeady introduced in the report. The Markdown is divided into three parts: 
+
+- we first introduce the analysis of the second article based on the package *mediation* and the dataset *JOBS II*,
+- we then consider a new dataset (*European Social Survey*) that we pre-process and explore,
+- and we eventually apply the methods above on that new dataset.
+
+
+```{r, message = FALSE, warning = FALSE}
+library(mediation)
+library(SparseM)
+library(quantreg)
+library(nlme)
+library(mgcv)
+library(foreign)
+library(tidyverse)
+library(dplyr)
+library(rmarkdown)
+library(missMDA)
+library(stringr)
+library(ggplot2)
+library(gridExtra)
+library(corrplot)
+library(cdata)
+library(shiny)
+```
+
+# *JOBS II* data and *mediation* package
+
+## Dataset *JOBS II*
+
+The dataset *JOBS II* comes from the Job Search Intervention Study (Vinokur and Schul, 1997). In the *JOBS II* field experiment, 1.801 unemployed workers received a pre-screening questionnaire and were then randomly assigned to treatment and control groups.
+
+Those in the **treatment** group participated in job-skills workshops while those in the control condition received a booklet describing job-search tips:
+
+- *treat*: variable descrbing whether the person benefited from the treatment or not.
+
+
+Two key **outcome variables** were measured:
+
+- *depress2*: a continuous measure of post-treatment depressive symptoms based on the Hopkins Symptom Checklist
+- *work1*: a binary variable representing whether the respondent had become employed.
+
+We will successively lead two analysis, (one for each outcome), one variable being continuous and the other discrete (binary).
+
+
+In the *JOBS II* data, a **key mediating variable** is:
+
+- *job_seek*: a continuous measure of job-search self-efficacy.
+
+Finally, in addition to the outcome and mediators, the *JOBS II* data also include the following list of **baseline covariates** that were measured prior to the administration of the treatment:
+
+- *depress1*: pre-treatment level of depression
+- *educ*: education
+- *income*: income
+- *nonwhite*: race
+- *marital*: marital status
+- *sex*: sex
+- *occp*: previous occupation
+- *econ_hard*: level of economic hardship.
+
+```{r}
+data("jobs")
+paged_table(jobs, options = list(rows.print = 10))
+```
+
+## Effects Estimation: Continuous outcome
+
+The study starts with *depress2* for the outcome (continuous variable as well as the mediator *job_seek*).
+
+### Linear models: BK procedure
+
+We use the Barron-Kenny procedure to test mediational hypothesis in our causal model:
+* checking the correlation between the treatment and the outcome,
+* checking the correlation between the treatment and the mediator, *(indeed, no mediation if no effect between the treatment and the mediator)*,
+* checking the impact of the correlation between the treatment and the mediator over the outcome.
+
+As explained in our report, the first step is to estimate the regressions coefficients corresponding to the predictions of the **mediator M** *jb_seek* and of the **outcome Y** *depress2*, with sequential regressions (**W** referring to the treatment and **X** to the confounding factors).
+
+- $Y=cW+\epsilon_1$
+
+- $M=aW+\epsilon_2$
+
+- $Y={c}'X+bW+\epsilon_3$.
+
+Let's estimate the coefficients.
+
+```{r}
+model_1_y <- lm(depress2 ~ treat            + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, data = jobs)
+model_2_m <- lm(job_seek ~ treat            + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, data = jobs)
+model_3_y <- lm(depress2 ~ treat + job_seek + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, data = jobs)
+```
+
+Here is a summary of the last regression for the outcome.
+
+```{r}
+summary(model_3_y)
+```
+
+
+A quick glance at the **p-values of the coefficients** is enough to ensure that many null hypothesis of non-significance aren't rejected at $95\%$: age, marital status... It should also be noted that the the coefficient estimate of pre-level of depression is high ($0.45$). 
+
+
+However, we need to be careful in that analysis as the non-significance of a coefficient doesn't mean that the variable has no impact on the outcome/mediator: that variable could be correlated to another variable concentrating the influence on the predicted variable. Furthermore, correlation does not imply causality AND **no correlation does not disaprove causation** (Bollen 1989), hence the causal mediation analysis *(the causation can be in a mediation relation or hidden by confounding variables)*.
+
+Here is a summary of the regression for the mediator.
+
+```{r}
+summary(model_2_m)
+```
+
+It may seem interesting at first glance to look at the differences with the outcome: the coefficient for pre-level of depression (*depress1*) is significant and is negative ($-0.25$), instead of being positive when predicting the outcome ($0.4$), on the other side, variables previously declared as non-significant at $95\%$ are now declared as significant (marital status). Nonetheless, contrary to basic correlation coefficients, regression coefficients can be affected by the coefficients of the other variables and we had better not rushing to draw conclusions.
+
+
+Let's to proceed to the mediation analysis instead. Actually, the package only requires in input the regression models estimated for the second and third equations (*model_2_m* and *model_3_y*).
+
+
+```{r}
+out.1 <- mediate(model_2_m, model_3_y, sims = 1000, treat = "treat", mediator = "job_seek")
+summary(out.1)
+```
+
+The first column correspond to the point estimates and the next two columns to the estimated bounderies of confidence interval at $95\%$. Here, the confidence intervals are estimated using quasi-Bayesian Monte Carlo approximations ($1000$ draws). It makes sense as despite the fact that we provide fixed models to the function *mediate*, the estimation of the effects involve randomness (see equations (11)-(16) in the report).
+
+
+If we look at the first three columns, it appears that the effects have a very low strength. One can easily confirm that with the the p-values, as they tend to indicate that none of the effects is significant.
+
+Those results are reprensented in the graph below.
+
+```{r}
+plot(out.1)
+```
+
+
+It appears that those effects (despite being non-significant) are more likely negative; if the job search mediates post-treatment depression, it's negatively.
+
+
+Eventually, one can check that - as expected - the Total Effect is the sum of the Average Diret Effect and of the Average Causal Mediation Effect (indirect effect), and that the proportion of the total effect due to mediation corresponds.
+
+
+### Linear models: BK Procedure with Interaction Term
+
+Even if that situation hasn't been mentioned in the report, it could happen that the treatment **moderates the causal mediation effect**, i.e. the mediation effect could vary depending on the treatment status. The package *mediation* enables us to deal with that, using the Baron-Kenny procedure with Interaction term.
+
+Actually, regarding the model it just comes down to consider a kind of mixed effect model, where the coefficients for the prediction of the outcome **Y** based on the mediator **M** change with the treatment **W**. *(We can easily do that in *R* as we are dealing here with linear models and a binary treatment)*. The model can be written as follows:
+
+```{r}
+model_moder_y <- lm(depress2 ~ treat + job_seek + treat:job_seek +
+                        depress1 + econ_hard + sex + age + occp +
+                        marital + nonwhite + educ + income, data = jobs)
+```
+
+We display the results below. The intermediate effects have now two potential values, depending on whether the treatment is $0$ or $1$. Each time, both values are displayed, in dotted lines for the control group and in solid line for the treatment group.
+
+```{r}
+out.2 <- mediate(model_2_m, model_moder_y, sims = 1000, treat = "treat", mediator = "job_seek")
+summary(out.2)
+plot(out.2, treatment = "both")
+```
+
+The effects don't seem to be more significant in that framework than in the previous one. It happens that modelling a possible moderation in our situation doesn't change anything, and it may not be necessary to go into that much details.
+
+### Non/Semi-parametric Regression
+
+Considering linear models can sometimes be too restrictive. In that section we investigate options to study mediation effects with non-linear models. For that we consider Generalized Additive Models (GAMs) using splines to model the effects (piecewise polynomial functions).
+
+
+```{r}
+model_gam_y <- gam(depress2 ~ treat + s(job_seek, bs = "cr") + depress1 + econ_hard +
+                     sex + age + occp + marital + nonwhite + educ + income, data = jobs)
+```
+
+Besides, the quasi-Bayesian approximation is suited to linear models for the estimation of the confidence intervals *(and more genrally parametric models) *, but when it comes to non-linear models bootstrap happens to be the only reliable option *(despite being more expensive in terms of computation ressources)*. We thus use non-parametric bootstrap to estimate confidence intervals in that section, resampling the data with replacement. 
+
+```{r}
+out.3 <- mediate(model_2_m, model_gam_y, sims = 1000, boot = TRUE, treat = "treat", mediator = "job_seek")
+summary(out.3)
+plot(out.3)
+```
+
+Here no real added-value.
+
+*The mediator can also be modelled with a GAM of course, and it is also possible to deal with interaction terms using GAM's.*
+
+### Quantile Causal Mediation Effects
+
+Another option that hasn't been mentioned in the report is to study the distribution of the outcome **Y** instead of its point values. More specifically, we look at the quantiles of that distribution.
+
+Mediation modeling based on the mean may not be sufficient enough actually to understand **different mediating effects across the outcome distribution**. For that we replace the previous models for the outcome **Y** by models of quantile regression, using the package *quantreg*.
+
+One should notice that the quantile $tau$ has to be specify in advance. Here we consider the following values for $tau: 0.2, 0.4, 0.6, 0.8$.
+
+```{r, warning=FALSE, message=FALSE}
+model_quant_y_2 <- rq(depress2 ~ treat + job_seek + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, tau = 0.2, data = jobs)
+
+model_quant_y_4 <- rq(depress2 ~ treat + job_seek + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, tau = 0.4, data = jobs)
+
+model_quant_y_6 <- rq(depress2 ~ treat + job_seek + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, tau = 0.6, data = jobs)
+
+model_quant_y_8 <- rq(depress2 ~ treat + job_seek + depress1 + econ_hard + sex + age + occp + marital + nonwhite + educ + income, tau = 0.8, data = jobs)
+
+out.4.2 <- mediate(model_2_m, model_quant_y_2, sims = 1000, boot = TRUE, treat = "treat", mediator = "job_seek")
+out.4.4 <- mediate(model_2_m, model_quant_y_4, sims = 1000, boot = TRUE, treat = "treat", mediator = "job_seek")
+out.4.6 <- mediate(model_2_m, model_quant_y_6, sims = 1000, boot = TRUE, treat = "treat", mediator = "job_seek")
+out.4.8 <- mediate(model_2_m, model_quant_y_8, sims = 1000, boot = TRUE, treat = "treat", mediator = "job_seek")
+```
+
+Here is the summary of the effects for $tau=0.2$.
+
+```{r}
+summary(out.4.2)
+```
+
+The plots are grouped below.
+
+```{r}
+par(mfrow=c(2,2))
+plot(out.4.2, main="Tau = 0.2")
+plot(out.4.4, main="Tau = 0.4")
+plot(out.4.6, main="Tau = 0.6")
+plot(out.4.8, main="Tau = 0.8")
+```
+
+Only the quantile $tau = 0.2$ differs from the others, the other results are quite the same as for the estimation with the mean. More specifically, the **ACME** doesn't change and the only difference is with the **ADE**. Even if the **ADE** effect don"t appear to be significant and the x-axis of the plot $tau = 0.2$ is more tightened than for the other plots (be careful with that), that effect is more positive than negative with $tau = 0.2$.
+
+One should notice that this result could hardly be attributed to a possible high variance of the effects for the tails of the distribution, provided that:
+
+- the **ACME** isn't affected at all, only the **ADE**
+
+- the distribution on the left is quite flat, and the quantile $tau=0.2$ may not be that instable
+
+- the other tail (way thiner) doesn't face that issue.
+
+The figure below may help support those arguments.
+
+```{r}
+ggplot(jobs) + aes(depress2) + geom_density(alpha=0.6, color="darkolivegreen1", fill="darkolivegreen1") +
+   ggtitle("Symptoms of depression, post-treatment", subtitle="Density distribution")
+```
+
+We can thus affirm that - even if the effect isn't significant - the treatment is more likely to increase depressive symptoms for the people almost not depressed at all than for the others. Nonetheless, one must keep in mind that those effects aren't significant and that the confidence intervals don't enable us to go further.
+
+Apart from that quantile, we can nonetheless say that the mediating effects don't vary much across the distribution of the outcome.
+
+NB: we could also look at the distribution of the difference *depress2* - *depress1*, symptoms of depression pre and post treatment (see below), as *depress1* is taken into account in the regression.
+
+```{r}
+ggplot(jobs) + aes(x=jobs$depress2 - jobs$depress1) +
+  geom_density(alpha=0.6, color="darkolivegreen1", fill="darkolivegreen1") +
+  scale_x_discrete(name="depress2 - depress1", limits=c(0:6)-3) +
+  ggtitle("Difference of symptoms of depression, pre and post treatment", subtitle="Density distribution")
+```
+
+
+
+## Effects Estimation: Discrete outcome
+
+Discrete outcomes can't be treated as continuous outcomes (for the regressions amongs other things). Nonetheless, the package *mediation* handles that issue. We illustrate that with the discrete outcome *work1*.
+
+To find out the estimate we use a *probit regression* instead of a *linear regression*. We could choose a *logit regression*, but the sensitivity analysis of the package *mediation* requires a *probit regression*.
+
+```{r}
+model_discrete_y <- glm(work1 ~ treat + job_seek + depress1 + econ_hard + sex + age +
+                                occp + marital + nonwhite + educ + income,
+                                family = binomial(link = "probit"), data = jobs)
+
+out.5 <- mediate(model_2_m, model_discrete_y, sims = 1000, treat = "treat", mediator = "job_seek")
+summary(out.5)
+plot(out.5)
+```
+
+Although we have no interaction term in our model, we still have to a difference between the treatment and control groups, the gap can be overlooked as simply due to the non-linearity of the model.
+
+## Sensitivity Analysis
+
+Here , the idea of the sensitivity analysis is to study the robustness of our results to the **ignorability assumption** (and more precisely to the second condition as explained in the report). Indeed, conclusions that are harder to alter by a plausible violation of an identification assumption add a higher scientific value to analytics.
+
+We keep considering $1000$ simulations per call to the function *mediate* - as before - due to the variance of our results that require a high number of simulations (we have tried samller values but that wasn't convincing enough).
+
+Once again, we use the Baron-Kenny Procedure.
+
+```{r}
+model_2_m <- lm(job_seek ~ treat + depress1 + econ_hard + sex + age + occp +
+                  marital + nonwhite + educ + income, data = jobs)
+
+model_3_y <- lm(depress2 ~ treat + job_seek + depress1 + econ_hard + sex + age + occp +
+                  marital + nonwhite + educ + income, data = jobs)
+```
+
+As in the report, we present two ways of leading the sensitivity analysis: through the study of the residuals correlation $\rho$, or through the coefficients of determination $R$. The *mediation* package can do both.
+
+
+
+```{r}
+med_cont <- mediate(model_2_m, model_3_y, sims=1000, treat = "treat", mediator = "job_seek")
+
+sens_cont <- medsens(med_cont, rho.by = 0.05)
+```
+
+
+
+The *rho.by* option neables us to choose the precision for the incrementation of the parameter rho in the sensitivity analysis. Having a rough incrementation goes faster but don't allow us to estimate precisely the robustness of our results. We choose the same value of $\rho$ as in the article.
+
+The object *sens_cont* contains the estimated effects and their CI's corresponding to each value of $\rho$ and $R$. 
+
+```{r}
+summary(sens_cont)
+```
+
+### Residuals correlation
+
+```{r}
+plot(sens_cont, sens.par = "rho")
+```
+
+
+We recall that the model is identifiable supposing that we know the correlation $\rho$ between $\epsilon_2$ and $\epsilon_3$ (see report and part 1.2.1 of the Markdown).
+
+**Let's explain what is depicted on the graph.**
+
+* The solid line curve represents the mediation effect **ACME** against different values of $\rho$, with the $95%$ confidence interval (based on the delta method).
+
+* The dashed horizontal line represents the estimated mediation effect under the sequential ignorability assumption (previous quantification of the effect). It thus correspond to the effect we get when considering $\rho = 0$ (with our current model).
+
+* The two extremities of the graph correspond to $\rho = +/- 1$, i.e. a total correlation of $\epsilon_2$ and $\epsilon_3$ and thus (see part 1.2.1 and report) a total correlation of $Y_i(w', m)$ and $M(w)$ conditional to $W=w$ (for any $w, w', m$), hinting thus at a very high mediation effect.
+
+* Why an $AMCE$ positive when $\rho$ becomes low enough (closer to $-1$) ? Because it corresponds to an **unobserved** pre-treatment covariate(s) that makes $Y$ decrease when it makes $M$ increase. By adjusting with regards to that covariate we would get that $Y$ increases more *(or decreases less)* when $M$ increases (through the intermediate effect).
+
+
+**How to interpret it ?**
+
+The critical point is when the curve crosses the x-axis: the mediation effect nullifies. That point corresponds here to $\rho = -0.20$ (see summary above). Moreover, we can see that the $95\%$ confidence intervals always contain $0$, whatever the value of $\rho$, and that our conclusion of non-significance of the $AMCE$ effect may hold with any value of $\rho$.
+
+If we had had a significant effect previously, we would have looked at the range of $\rho$ on which the $95\%$ confidence interval $CI$ don't contain $0$ in order to determine whether the results are robust. If that condition of $0 \notin CI$ would only be true for a small interval of $\rho$ around $0$, that would be disappointed, otherwise it would hint at the fact that our results resist to a violation of the second condition required for ignorability.
+
+### Coefficients of determination
+
+We look at the products of the coefficients $R^{2*}_M R^{2*}_Y$, corresponding to the proportion of the variance of our outcome which is unexplained by our current predictors, and that would be explained by a non-identified pre-treatment covariate (see report).
+
+By the way, we have $\rho^2 = R_M^{2*}R_Y^{2*}$ (see report) and $\rho = sign(\lambda_2 \lambda_3) R_M^* R_Y^*$ with $sign(\lambda_2 \lambda_3)$ the sign of the product; positive if the correlation with the unobserved covariate is of the same sign for the outcome **and** the mediator (see report), negative otherwise.
+
+As above, the idea is to look at the estimated value of the $AMCE$ for different values of $R^{2*}_M$ and $R^{2*}_Y$ that we choose, "what if the unobserved covariate had *that* precise importance ?". More specifically the plot represents level curves of the $AMCE$, (when the product is set).
+
+```{r}
+par(mfrow=c(1,2))
+plot(sens_cont, sens.par = "R2", r.type = "residual", sign.prod = "negative")
+plot(sens_cont, sens.par = "R2", r.type = "residual", sign.prod = "positive")
+```
+
+The level curve corresponding to $ACME = 0$ is in bold (critical point in the plot with $\rho$).
+
+It is important to understand that the shape of the curves will always be the same as they correspond to $xy= c^{te}$, for different constant values. *(There are two plots to study both signs, as the two plots may not give the same values of **ACME**).*
+
+The point is thus to look at the value of **ACME** on each level curve: does our result hold when the product increases ? i.e. when we consider a neglected pre-treatment covariate with more influence, do we still get that the effect is significant ? The signs for extrem values can be explained as with $\rho$.
+
+This is only an graphical visualization of the summary, helping us to visualize when the *ACME* wouldn't be really significant anymore.
+
+Here the effect was already non-significant, and even with different values of the product it seems to remain non-significant. Nonetheless, if we originally had a significant effect, let's say negative, we would have looked for the value of the product where the effect isn't strictly negative anymore. *The summary above can help.* That would have indicated us the proportion of variance explained by neglected confounders which is required to have a situation where the effect would actually be null. That would help us having more hindsight on the robustness of our results by determining whether they would resist a violation of the ignorability assumption.
+
+# European Social Survey
+
+## Presenting the dataset
+
+The new data we chose come from the European Social Survey (ESS), a European initiative to study the attitudes, beliefs and behaviour patterns of various populations in Europe. The data come from a series of questionnaires collected every 2 years since 2002. They are available for free at the following link: https://www.europeansocialsurvey.org/data#.
+
+The list of all the available variables is given here : https://www.europeansocialsurvey.org/docs/cumulative/ESS_cumulative_variable_list.pdf. One may have noticed that the the questionnaires change from one version to another, the study covering more and more topics over time, and some variables are thus only available for some precise years.
+
+Our work focuses on studying opinions on immigration questions: we thus had to choose between the first round (2002) and the seventh round (2014) of the survey. We chose the most recent round, available here: https://www.europeansocialsurvey.org/data/download.html?r=7. Those version contain indeed questions measuring attitudes of immigration and perceptions of social realities as well as opinions on public policy and knowledge, in addition to the standard questions that don't vary over the questionnaires.
+
+
+The table below contains the questions we decided to select from the raw data (40185 rows).
+
+
+```{r, layout="l-body-outset", warning = FALSE, message = FALSE}
+d <- read.dta("D:/Téléchargements/ESS7e02_2.stata/ESS7e02_2.dta")
+
+# columns we keep
+df <- d %>% dplyr::select(c(acetalv, imbleco, imtcjob, imwbcrm, imueclt, gvrfgap, imwbcnt, gndr, yrbrn, eduyrs, uempla, stfeco, tvtot, tvpol, happy, sclmeet, stflife, rlgblg, dscrgrp, ctzcntr, brncntr, blgetmg, facntr, mocntr, ipeqopt, impsafe, iphlppl, ipstrgv, pplstrd))
+
+paged_table(df, options = list(rows.print = 10))
+```
+
+## Presenting our study
+
+Our objective is to decompose the thinking process leading to a specific opinion on immigration by breaking it down into intermediate steps.
+
+We try to better explain basic political opinions on immigration by the fact that minority race/ethnic groups live in the same local area or not. Our work aims specifically at determining whether those opinions involve intermediate *(mediating)* ideas such as "immigrants would take jobs away", "worsen criminality", "undermine the country's cultural life"..., as well as the influence of living close to minorities on those ideas.
+
+Are such ideas more present in the minds of people living close to minorities, or on the contrary in people having no real contact with them ? potentially hinting at the fact that some ideas could actually be prejudices, or not.
+
+
+![](https://nsa40.casimages.com/img/2020/04/06/200406084820756989.jpg)
+
+
+One thing to note is that we don't study all those mediating ideas (effects) at the same time, only one after another *(see the report fore more details regarding the issue of the multiplicity of mediators)*. Same for the outcomes.
+
+We also adjust by gender, age, education, job situation, time watching tv, belonging to a minority and many other confounding factors listed below.
+
+
+Here are the questions we consider in our study:
+
+**EXPOSURE W**
+
+*acetalv*: People of minority race/ethnic group in current living area
+
+**MEDIATORS M** (choose one)
+
+*imbleco*: Taxes and services: immigrants take out more than they put in or less
+
+*imtcjob*: Immigrants take jobs away in country or create new jobs
+
+*imwbcrm*: Immigrants make country's crime problems worse or better
+
+*imueclt*: Country's cultural life undermined or enriched by immigrants
+
+
+**OUTCOME Y** (choose one)
+
+*gvrfgap*: Government should be generous judging applications for refugee status
+
+*imwbcnt*: Immigrants make country worse or better place to live
+
+
+**CONFOUNDING FACTORS X**
+
+*gndr*: Gender
+
+*yrbrn*: Year of birth
+
+*eduyrs*: Years of full-time education completed
+
+*uempla*: Doing last 7 days: unemployed, actively looking for job
+
+*stfeco*: How satisfied with present state of economy in country
+
+*tvtot*: TV watching, total time on average weekday
+
+*tvpol*: TV watching, news/ politics/current affairs on average weekday
+
+*happy*: How happy are you
+
+*sclmeet*: How often socially meet with friends, relatives or colleagues
+
+*stflife*: How satisfied with life as a whole
+
+*rlgblg*: Belonging to particular religion or denomination
+
+*dscrgrp*: Member of a group discriminated against in this country
+
+*ctzcntr*: Citizen of country
+
+*brncntr*: Born in country
+
+*blgetmg*: Belong to minority ethnic group in country
+
+*facntr*: Father born in country
+
+*mocntr*: Mother born in country
+
+*ipeqopt*: Important that people are treated equally and have equal opportunities
+
+*impsafe*: Important to live in secure and safe surroundings
+
+*iphlppl*: Important to help people and care for others well-being
+
+*ipstrgv*: Important that government is strong and ensures safety
+
+*pplstrd*: Better for a country if almost everyone share customs and traditions.
+
+
+
+## Pre-processing
+
+### Categories values
+
+We attribute a numeric value to every answer (instead of a textual categorical value), based on the information provided by the Norwegian Social Science Data Services (NSD). Most of the variables are indeed ordinal variables but not in a numeric format yet.
+
+```{r}
+# Replacement functions
+
+rep_no_ans <- function(x) {
+  if (is.na(x)) NaN
+  else if (x %in% c("Refusal", "Don't know", "No answer", "Not applicable")) NaN
+  else x}
+
+rep_acetalv <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Almost nobody minority race/ethnic group") 0
+  else if (x == "Some minority race/ethnic group") 1
+  else if (x == "Many minority race/ethnic group") 2
+  else NaN}
+
+rep_imbleco <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Generally take out more") 0
+  else if (x == "Generally put in more") 10
+  else x}
+
+rep_imtcjob <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Take jobs away") 0
+  else if (x == "Create new jobs") 10
+  else x}
+
+rep_imwbcrm <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Crime problems made worse") 0
+  else if (x == "Crime problems made better") 10
+  else x}
+
+rep_imueclt_happy <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Cultural life undermined") 0
+  else if (x == "Cultural life enriched") 10
+  else x}
+
+rep_agree <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Agree strongly") 1
+  else if (x == "Agree") 2
+  else if (x == "Neither agree nor disagree") 3
+  else if (x == "Disagree") 4
+  else if (x == "Disagree strongly") 5
+  else x}
+
+rep_imwbcnt <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Worse place to live") 0
+  else if (x == "Better place to live") 10
+  else x}
+
+rep_gndr <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Male") 0
+  else if (x == "Female") 1
+  else x}
+
+rep_uempla <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Not marked") 0
+  else if (x == "Marked") 1
+  else x}
+
+rep_stf <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "	Extremely dissatisfied") 0
+  else if (x == "	Extremely satisfied") 10
+  else x}
+
+rep_tv <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "No time at all") 0
+  else if (x == "Less than 0,5 hour") 1
+  else if (x == "0,5 hour to 1 hour") 2
+  else if (x == "More than 1 hour, up to 1,5 hours") 3
+  else if (x == "More than 1,5 hours, up to 2 hours") 4
+  else if (x == "More than 2 hours, up to 2,5 hours") 5
+  else if (x == "More than 2,5 hours, up to 3 hours") 6
+  else if (x == "More than 3 hours") 7
+  else x}
+
+rep_sclmeet <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Never") 1
+  else if (x == "Less than once a month") 2
+  else if (x == "Once a month") 3
+  else if (x == "Several times a month") 4
+  else if (x == "Once a week") 5
+  else if (x == "Several times a week") 6
+  else if (x == "Every day") 7
+  else x}
+
+rep_yes_no <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Yes") 0
+  else if (x == "No") 1
+  else x}
+
+rep_like <- function(x) {
+  if (is.na(x)) NaN
+  else if (x == "Very much like me") 1
+  else if (x == "Like me") 2
+  else if (x == "Somewhat like me") 3
+  else if (x == "A little like me") 4
+  else if (x == "Not like me") 5
+  else if (x == "Not like me at all") 6
+  else x}
+
+# Applying those functions to the dataset
+
+df$acetalv <- Vectorize(rep_acetalv)(df$acetalv)
+df$imbleco <- Vectorize(rep_imbleco)(df$imbleco)
+df$imtcjob <- Vectorize(rep_imtcjob)(df$imtcjob)
+df$imwbcrm <- Vectorize(rep_imwbcrm)(df$imwbcrm)
+df$imueclt <- Vectorize(rep_imueclt_happy)(df$imueclt)
+df$gvrfgap <- Vectorize(rep_agree)(df$gvrfgap)
+df$imwbcnt <- Vectorize(rep_imwbcnt)(df$imwbcnt)
+df$gndr    <- Vectorize(rep_gndr)(df$gndr)
+df$uempla  <- Vectorize(rep_uempla)(df$uempla)
+df$stfeco  <- Vectorize(rep_stf)(df$stfeco)
+df$tvtot   <- Vectorize(rep_tv)(df$tvtot)
+df$tvpol   <- Vectorize(rep_tv)(df$tvpol)
+df$happy   <- Vectorize(rep_imueclt_happy)(df$happy)
+df$sclmeet <- Vectorize(rep_sclmeet)(df$sclmeet)
+df$stflife <- Vectorize(rep_stf)(df$stflife)
+df$rlgblg  <- Vectorize(rep_yes_no)(df$rlgblg)
+df$dscrgrp <- Vectorize(rep_yes_no)(df$dscrgrp)
+df$ctzcntr <- Vectorize(rep_yes_no)(df$ctzcntr)
+df$brncntr <- Vectorize(rep_yes_no)(df$brncntr)
+df$facntr  <- Vectorize(rep_yes_no)(df$facntr)
+df$mocntr  <- Vectorize(rep_yes_no)(df$mocntr)
+df$ipeqopt <- Vectorize(rep_like)(df$ipeqopt)
+df$impsafe <- Vectorize(rep_like)(df$impsafe)
+df$iphlppl <- Vectorize(rep_like)(df$iphlppl)
+df$ipstrgv <- Vectorize(rep_like)(df$ipstrgv)
+df$pplstrd <- Vectorize(rep_agree)(df$pplstrd)
+
+
+df <- df %>% dplyr::mutate_all(Vectorize(rep_no_ans))
+df <- df %>% dplyr::mutate_all(as.numeric)
+df <- df %>% dplyr::mutate_at(c("gndr", "uempla", "rlgblg", "dscrgrp", "ctzcntr", "brncntr", "blgetmg", "facntr", "mocntr"), as.factor)
+df <- replace(df, df =="NaN", NA)
+```
+
+
+### Imputing missing data
+
+We impute the missing data with an iterative Factorial Analysis for Mixed Data model (FAMD) imputation method.
+
+Audigier, V., Husson, F. & Josse, J. (2013). A principal components method to impute mixed data. Advances in Data Analysis and Classification, 10(1), 5-26. https://arxiv.org/abs/1301.4797
+
+```{r}
+df_imputed <- imputeFAMD(df, ncp=10)$completeObs
+df_imputed <- df_imputed %>% mutate_if(is.factor, function(x) as.factor(str_sub(x,-1))) %>% mutate_if(is.numeric, round)
+```
+
+
+The final (clean) dataset:
+
+```{r}
+paged_table(df_imputed, options = list(rows.print = 10))
+```
+
+## Data exploration
+
+### Outcomes
+
+As a recall, the outcome variables are:
+
+- *gvrfgap*: Government should be generous judging applications for refugee status (1: Agree strongly - 5: Disagree strongly)
+
+- *imwbcnt*: Immigrants make country worse or better place to live (0: Worse - 10: Better).
+
+Here are histograms for both variables, with the **imputed data in red** and the **raw data in blue**.
+
+
+```{r, warning=FALSE}
+ggplot() + geom_bar(aes(x=df_imputed$gvrfgap), alpha=0.2, color="red",  fill="red") +
+           geom_bar(aes(x=df$gvrfgap        ), alpha=0.2, color="blue", fill="blue") +
+           scale_x_discrete(name ="gvrfgap", limits=c(1:5)) +
+           labs(title = "Government should be generous judging applications for refugee status",
+                subtitle = "(1: Agree strongly - 5: Disagree strongly)",
+                caption = "Data source: ESS Round 7")
+
+ggplot() + geom_bar(aes(x=df_imputed$imwbcnt), alpha=0.2, color="red",  fill="red") +
+           geom_bar(aes(x=df$imwbcnt        ), alpha=0.2, color="blue", fill="blue") +
+           scale_x_discrete(name ="imwbcnt", limits=c(0:10)) +
+           labs(title = "Immigrants make country worse or better place to live",
+                subtitle = "(0: Worse - 10: Better)",
+                caption = "Data source: ESS Round 7")
+```
+
+Sounds like we have values Missing not at Random (MNAR) for the outcomes: with no surprise it seems - based on the imputation results - that the people not answering are more likely to have a neutral opinion (are at least look like the people having answered with a neutral opinion).
+
+
+We expect the two potential outcomes to be negatively correlated, let's compare them.
+
+```{r, warning=FALSE}
+ggplot(df_imputed) + aes(x = gvrfgap, y=imwbcnt) + geom_jitter(color="orange", size=0.07) +
+             scale_y_discrete(limits=c(0:10)) +
+             labs(title = "Graphical correlation of the potential outcomes",
+                  subtitle = "Jitter plot",
+                  caption = "Data source: ESS Round 7")
+```
+
+We choose the outcome question *gvrfgap*: "Government should be generous judging applications for refugee status".
+
+### Exposure
+
+The exposure is *acetalv*: People of minority race/ethnic group in current living area.
+
+Imputed data in orange and non-imputed data in green.
+
+```{r, warning=FALSE}
+ggplot() + geom_bar(aes(x=df_imputed$acetalv), alpha=0.2, color="orange", fill="orange") +
+           geom_bar(aes(x=df$acetalv        ), alpha=0.2, color="green", fill="green") +
+           scale_x_discrete(name ="acetalv", limits=c(0:2)) +
+           labs(title = "People of minority race/ethnic group in current living area",
+                subtitle = "(0: Almost nobody - 2: Many minority groups)",
+                caption = "Data source: ESS Round 7")
+```
+
+
+### Mediators
+
+The list of possible mediators is:
+
+- *imbleco*: Taxes and services: immigrants take out more than they put in or less
+
+- *imtcjob*: Immigrants take jobs away in country or create new jobs
+
+- *imwbcrm*: Immigrants make country's crime problems worse or better
+
+- *imueclt*: Country's cultural life undermined or enriched by immigrants.
+
+```{r}
+mediators = df_imputed %>% select(imbleco, imtcjob, imwbcrm, imueclt)
+
+mediators <- sample_n(mediators, 2000)
+
+meas_vars <- c("imbleco", "imtcjob", "imwbcrm", "imueclt")
+
+controlTable <- data.frame(expand.grid(meas_vars, meas_vars, stringsAsFactors = FALSE))
+colnames(controlTable) <- c("xv", "yv")
+controlTable <- cbind(data.frame(pair_key = paste(controlTable[[1]], controlTable[[2]]),
+                      stringsAsFactors = FALSE), controlTable)
+aug = rowrecs_to_blocks(mediators, controlTable)
+splt <- strsplit(aug$pair_key, split = " ", fixed = TRUE)
+aug$x <- vapply(splt, function(si) si[[1]], character(1))
+aug$y <- vapply(splt, function(si) si[[2]], character(1))
+aug$x <- factor(as.character(aug$x), meas_vars)
+aug$y <- factor(as.character(aug$y), meas_vars)
+
+
+ggplot(aug, aes(x=xv, y=yv)) +
+       geom_jitter(color="darkslategray1", size=0.001) +
+       scale_color_brewer("Diamond\nclarity") +
+       facet_grid(y~x, labeller = label_both, scale = "free") +
+       ggtitle("Mediators") +
+       ylab(NULL) + xlab(NULL) +
+       theme_dark()
+```
+
+As we consider small plots *(having many plots in the same graph)*, a jitter plot can't be refined enough to distinguish between dense areas, hence the density plot in 2D below. One may note that the areas with few points appear as empty.
+
+The mediators tend to be pretty correlated, we analyze them one at at time.
+
+### Confounding factors (Shiny app)
+
+We offer an app to visualize any confounder and its relation with any "main variable"" (outcome, exposure, mediator).
+
+On the left plot (confounder only) the blue light portion conrrespond to the missing data we imputed.
+
+It is possible to choose the type of graph to study correlations between confounder / main variable.
+
+
+```{r, echo=FALSE}
+main_var <- c("gvrfgap", "imwbcnt", "acetalv", "imbleco", "imtcjob", "imwbcrm", "imueclt")
+
+titles <- c("Gender", "Year of birth", "Years of full-time education completed", "Doing last 7 days: unemployed, actively looking for job", 
+            "How satisfied with present state of economy in country", "TV watching, total time on average weekday",
+            "TV watching, news/ politics/current affairs on average weekday",
+            "How happy are you", "How often socially meet with friends, relatives or colleagues", "How satisfied with life as a whole",
+            "Belonging to particular religion or denomination", "Member of a group discriminated against in this country",
+            "Citizen of country", "Born in country", "Belong to minority ethnic group in country", "Father born in country", "Mother born in country",
+            "Important that people are treated equally and have equal opportunities", "Important to live in secure and safe surroundings",
+            "Important to help people and care for others well-being", "Important that government is strong and ensures safety",
+            "Better for a country if almost everyone share customs and traditions")
+
+names(titles) <- colnames(df %>% select(-main_var))
+
+main_titles <- c("Government should be generous judging applications for refugee status",
+                 "Immigrants make country worse or better place to live",
+                 "People of minority race/ethnic group in current living area",
+                 "Taxes and services: immigrants take out more than they put in or less",
+                 "Immigrants take jobs away in country or create new jobs",
+                 "Immigrants make country's crime problems worse or better",
+                 "Country's cultural life undermined or enriched by immigrants")
+
+names(main_titles) <- main_var
+
+plotplot <- function() {
+
+  shinyApp(
+    ui = fluidPage(
+      fluidRow(style = "padding-bottom: 20px;",
+        column(4, selectInput('xcol', 'Confounder', colnames(df %>% select(-main_var)))),
+        column(4, selectInput('ycol', 'Outcome/Exposure/Mediator', main_var))),
+      sliderInput('x_value', "Confounder value:",
+                  min = 0, max = 2, value = 1),
+      fluidRow(
+        plotOutput('ploplot', height = "400px"))
+      
+    ),
+
+    server = function(input, output, session) {
+      
+      observeEvent(input$xcol,{
+      ddf <- replace(df, df =="NaN", NA) %>%
+        mutate_if(is.factor, function(x) as.integer(x, na.rm=TRUE)-1) 
+      
+      
+      ddf <- ddf %>% select(c(input$xcol, input$ycol)) %>%
+          rename("br" = input$xcol, "or" = input$ycol) %>%
+          mutate_all(as.numeric)
+      
+      updateSliderInput(session,'x_value',
+                        min = min(ddf$br, na.rm=TRUE), max = max(ddf$br, na.rm=TRUE))})
+      
+      
+      output$ploplot <- renderPlot(height = 400, {
+        
+        dod <- df %>% dplyr::select(c(input$xcol, input$ycol))
+        dod <- dod %>% rename("bijour" = input$xcol, "orvoir" = input$ycol)
+        
+        dod_imputation <- df_imputed %>% select(c(input$xcol, input$ycol))
+        dod_imputation <- dod_imputation %>% rename("bijoux" = input$xcol, "ornoir" = input$ycol)
+        
+        other = cbind(dod, dod_imputation)
+        dod <- dod %>% drop_na()
+        
+        # Combine the selected variables into a new data frame
+        
+        upper_left <- ggplot() + geom_bar(aes(x=dod$bijour), color="darkorchid1",
+                                          fill="darkorchid1", na.rm = TRUE,
+                                          alpha=0.5) +
+                                 geom_bar(aes(x=dod_imputation$bijoux),
+                                          fill="darkturquoise", color="darkturquoise",
+                                          na.rm = TRUE, alpha=0.3) +
+                                 scale_x_discrete(name=input$xcol) +
+                                 labs(title = paste(titles[input$xcol]),
+                                      subtitle = "Barplot")
+          
+        upper_right <- ggplot(df_imputed) + aes_string(x = input$xcol, y=input$ycol) +
+                                      geom_jitter(color="orange", size=0.07) +
+                                      #geom_bar() +
+                                      labs(title = paste("Values of", toupper(input$ycol),
+                                            "depending on the confounder", toupper(input$xcol)),
+                                      subtitle = "Jitter plot")
+        
+        lower_left <- ggplot() + geom_bar(aes(x=dod$orvoir),
+                                          color="violet", fill="violet",
+                                          na.rm = TRUE, alpha=0.5) +
+                                 geom_bar(aes(x=dod_imputation$ornoir),
+                                          fill="rosybrown1", color="rosybrown1",
+                                          na.rm = TRUE, alpha=0.3) +
+                                 scale_x_discrete(name=input$ycol) +
+                                 labs(title = paste(main_titles[input$ycol]),
+                                      subtitle = "Barplot, all data")
+        
+        dodu <- dod %>% filter(bijour == input$x_value)
+        dodu_imputation <- dod_imputation %>% filter(bijoux == input$x_value)
+        
+        lower_right <- ggplot() + geom_bar(aes(x=dodu$orvoir),
+                                          color="violet", fill="violet",
+                                          na.rm = TRUE, alpha=0.5) +
+                                 geom_bar(aes(x=dodu_imputation$ornoir),
+                                          fill="rosybrown1", color="rosybrown1",
+                                          na.rm = TRUE, alpha=0.3) +
+                                 scale_x_discrete(name=input$ycol) +
+                                 labs(title = paste(main_titles[input$ycol]),
+                                      subtitle = paste(toupper(input$xcol), "=", input$x_value))
+        
+        grid.arrange(upper_left, upper_right, lower_left, lower_right, nrow=2, ncol=2)
+      })
+    },
+
+    options = list(height = 900)
+  )
+}
+
+plotplot()
+```
+
+
+
+# Mediation Analysis on the new dataset
+
+The objective of that part is to conduct a mediation analysis on our new dataset. We will use the methods explain in part 1.
+
+We will consider the treatment *acetalv*, but as binary treatment: the groups "Some minorities" and "Many minorities" will thus be grouped together.
+
+```{r}
+dd <- df_imputed %>% mutate_all(as.numeric)
+dd$acetalv[dd$acetalv==2] <- 1
+```
+
+The outcome we chose is *gvrfgap*, but we will test all the mediators: *imbleco*, *imtcjob*, *imwbcrm* and *imueclt*. We select some of the confounding factors introduced below.
+
+We quantify the effect with linear models, as non-linear models don't bring any change (not shown here but we've looked at it). We have also looked at interaction terms and it makes very little difference too.
+
+## Estimations and tests of the effects
+
+
+```{r}
+# mediator imbleco
+
+model.m.1 <- lm(imbleco ~ acetalv           + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+model.y.1 <- lm(gvrfgap ~ acetalv + imbleco + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+out.1 <- mediate(model.m.1, model.y.1, sims = 1000, treat = "acetalv", mediator = "imbleco")
+
+# mediator imtcjob
+
+model.m.2 <- lm(imtcjob ~ acetalv           + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+model.y.2 <- lm(gvrfgap ~ acetalv + imtcjob + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+out.2 <- mediate(model.m.2, model.y.2, sims = 1000, treat = "acetalv", mediator = "imtcjob")
+
+# mediator imwbcrm
+
+model.m.3 <- lm(imwbcrm ~ acetalv           + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+model.y.3 <- lm(gvrfgap ~ acetalv + imwbcrm + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+out.3 <- mediate(model.m.3, model.y.3, sims = 1000, treat = "acetalv", mediator = "imwbcrm")
+
+# mediator imueclt
+
+model.m.4 <- lm(imueclt ~ acetalv           + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+model.y.4 <- lm(gvrfgap ~ acetalv + imueclt + gndr + yrbrn + uempla + stfeco + tvtot +
+                  happy + rlgblg + blgetmg + ipeqopt + impsafe, data = dd)
+
+out.4 <- mediate(model.m.4, model.y.4, sims = 1000, treat = "acetalv", mediator = "imueclt")
+```
+
+We plot the results of the four mediators together.
+
+```{r}
+par(mfrow=c(2,2))
+plot(out.1, main="imbleco")
+plot(out.2, main="imtcjob")
+plot(out.3, main="imwbcrm")
+plot(out.4, main="imueclt")
+```
+
+When looking at the summaries below, we can see that the three effects are almost always significant at $95\%$ (one can look at the p-values but also at the confidence intervals on the plots that don't contain $0$).
+
+The **Total Effect** is relatively stable and the proportion of mediated effect really depends on the mediator.
+
+We have for:
+
+* *imbleco* around $10\%$
+* *imtcjob* around $25-30\%$
+* *imwbcrm* around $5\%$
+* *imueclt* around $30\%$.
+
+The rest is explained by the **Direct Effect**.
+
+Based on the proportion of mediated effect in the total effect, we can distinguish between two groups of mediators:
+
+- *imbleco* and *imwbcrm* on the left: low mediation
+
+- *imtcjob* and *imueclt* on the right: explain almost one third of the total effect.
+
+
+Here is the summary for *imbleco*: Taxes and services: immigrants take out more than they put in or less.
+
+```{r}
+summary(out.1)
+```
+
+Here is the summary for *imtcjob*: Immigrants take jobs away in country or create new jobs.
+
+```{r}
+summary(out.2)
+```
+
+Here is the summary for *imwbcrm*: Immigrants make country's crime problems worse or better.
+
+```{r}
+summary(out.3)
+```
+
+Here is the summary for *imueclt*: Country's cultural life undermined or enriched by immigrants.
+
+```{r}
+summary(out.4)
+```
+
+## Sensitivity analysis
+
+We conduct the same kind of sensitivity analysis as with the dataset *JOBS II* in part 1, i.e looking at the residual coefficient $\rho$ and at the coefficients of determination $R^*$.
+
+
+```{r}
+med.cont.1 <- mediate(model.m.1, model.y.1, sims=1000, treat = "acetalv", mediator = "imbleco")
+med.cont.2 <- mediate(model.m.2, model.y.2, sims=1000, treat = "acetalv", mediator = "imtcjob")
+med.cont.3 <- mediate(model.m.3, model.y.3, sims=1000, treat = "acetalv", mediator = "imwbcrm")
+med.cont.4 <- mediate(model.m.4, model.y.4, sims=1000, treat = "acetalv", mediator = "imueclt")
+
+sens.cont.1 <- medsens(med.cont.1, rho.by = 0.05)
+sens.cont.2 <- medsens(med.cont.2, rho.by = 0.05)
+sens.cont.3 <- medsens(med.cont.3, rho.by = 0.05)
+sens.cont.4 <- medsens(med.cont.4, rho.by = 0.05)
+```
+
+### Residual coefficient
+
+The residuals correlation plots are grouped below:
+
+```{r}
+par(mfrow=c(2,2))
+plot(sens.cont.1, sens.par = "rho", sub="imbleco")
+plot(sens.cont.2, sens.par = "rho", sub="imtcjob")
+plot(sens.cont.3, sens.par = "rho", sub="imwbcrm")
+plot(sens.cont.4, sens.par = "rho", sub="imueclt")
+```
+
+With no surprise we can see that the higher the proportion of mediated effect, the more robust the result: indeed, for the mediators on the right, the effect remains strictly negative at $95\%$ for a pretty wide interval of values $\rho$ (the confidence intervals are also very thin). The confidence intervals for the first mediator *imbleco* are less thin but the effect remains strictly negative at $95\%$ on a wide interval. The real issue regarding robustness concerns the mediator *imwbcrm*: the confidence intervals are large and contain zero for a a wide range of $\rho$ values.
+
+Besides, we can see on the summaries (below) that the **ACME** nullifies at $\rho \leq -0.25$ for all mediators.
+
+Here is the summary for *imbleco*: Taxes and services: immigrants take out more than they put in or less.
+
+```{r}
+summary(sens.cont.1)
+```
+
+Here is the summary for *imtcjob*: Immigrants take jobs away in country or create new jobs.
+
+```{r}
+summary(sens.cont.2)
+```
+
+Here is the summary for *imwbcrm*: Immigrants make country's crime problems worse or better.
+
+```{r}
+summary(sens.cont.3)
+```
+
+Here is the summary for *imueclt*: Country's cultural life undermined or enriched by immigrants.
+
+```{r}
+summary(sens.cont.4)
+```
+
+
+### Coefficients of determination
+
+We display the usual graph with one mediator per column, and negative correlations at the top and positive ones at the bottom.
+
+```{r, fig.width=10}
+par(mfrow=c(2,4))
+plot(sens.cont.1, sens.par = "R2", r.type = "residual", sign.prod = "negative")
+plot(sens.cont.2, sens.par = "R2", r.type = "residual", sign.prod = "negative")
+plot(sens.cont.3, sens.par = "R2", r.type = "residual", sign.prod = "negative")
+plot(sens.cont.4, sens.par = "R2", r.type = "residual", sign.prod = "negative")
+plot(sens.cont.1, sens.par = "R2", r.type = "residual", sign.prod = "positive", sub="imbleco")
+plot(sens.cont.2, sens.par = "R2", r.type = "residual", sign.prod = "positive", sub="imtcjob")
+plot(sens.cont.3, sens.par = "R2", r.type = "residual", sign.prod = "positive", sub="imwbcrm")
+plot(sens.cont.4, sens.par = "R2", r.type = "residual", sign.prod = "positive", sub="imueclt")
+```
+
+As with the residual coefficient plots, we can see that the effect remains strictly negative for positive products, and that it requires a certain amount of unexplained variance *(explained by an unobserved confounder)* to get an effect null in reality.
+
+Graphically, one could guess that the corresponding square product for a null effect is around $R_Y^{2*} R_M^{2*} = 0.1 \times 0.6 = 0.25^2$.
+
+For all mediators except *imwbcrm*, the **ACME** is then still guaranteed to be strictly negative as long as the proportion of unexplained variance which can be explained by an unobserved confounder is less than $25\%$ (for a confounder whose correlations with the mediator and the outcomes are of opposite sign, otherwise it's okay). *We also use the $\rho$ to state that.*
+
+
+## Conclusions
+
+Our conclusions eventually depend on the mediator:
+
+* *imbleco*: the proportion of mediated effect is around $10\%$, the mediation is significant (all the effects are significant), and the **result can be considered as robust** to the violation of ignorability (see sensitivity analysis),
+
+* *imtcjob*: the proportion of mediated effect is around $25-30\%$, the mediation is significant and the **result is robust**,
+
+* *imwbcrm*: the proportion of mediated effect is around $5\%$, with a mediation effect significant at $90\%$ but not at $95\%$, and when looking at the sensitivity analysis we can state that the result isn't robust,
+
+* *imueclt*: the proportion of mediated effect is around $25-30\%$, the mediation is significant and the **result is robust**.
+
+
+## Discussion
+
+As we can see it by looking at the meaning of those mediations, the main point lies in the causal effect **between the treatment and the mediator**. One may argue that this relationship hasn't been studied here, but that would be incorrect as the tests we consider take that relation into account (effect $a$ with the notations of the report). 
+
+Finally, we haven't included the unused mediators as confounding factors when we studied each mediator in particular (too correlated: that would make the analysis too much tricky), and the unexplained variance in each study could (might) actually be attributed to the unused mediators. 
+
+Eventually, even if the proportions of mediated effect can be viewed as low, part of those proportions could actually sum when considering the whole set of mediators.
+
+The two previous points are linked to the issue of multiple mediators raised in the report.
+
+
+## Bonus: Meaning of the mediations
+
+Let's have a look at the meanings of the mediations, just to explain the meaning of the results we discuss.
+
+A total effect which is negative *(as in our situation)* suggests that **having minorities living in same current area** would make you more inclined to agree with the fact that **the Government should be more generous judging applications for refugee status**.
+
+
+The mediation effects we get as results (if proven to be robust enough) suggest that having minorities living in the current area would make people more "immigration friendly" through the idea that:
+
+* immigrants would take less than they put in (*imbleco*),
+
+* immigrants would create new jobs more than they would take (*imtcjob*)
+
+* immigrants wouldn't make country's crime problems worse (*imwbcrm*)
+
+* country's cultural life is enriched by immigrants (*imueclt*).
+
+
+In Europe, being in contact with minorities due to a geographical proximity would favor certain positive ideas as listed above, having people more "immigration friendly" (for the results proved as robusts).
+
+  
+
+
+
+
